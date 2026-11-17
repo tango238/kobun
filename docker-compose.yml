@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+    depends_on:
+      - postgres
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      - temporal
+    ports:
+      - "8080:8080"
+
+  worker:
+    build: ./worker
+    environment:
+      CHECKPOINT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/checkpoints
+      SANDBOX_URL: http://sandbox:7000
+      LLM_BACKEND: ${LLM_BACKEND:-claude-cli}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PI_MODEL_ID: ${PI_MODEL_ID:-claude-sonnet-4-5}
+    depends_on:
+      - postgres
+      - temporal
+      - sandbox
+    networks:
+      - default
+      - sandbox-net
+
+  api:
+    build: ./worker
+    command: ["npx", "ts-node", "src/server.ts"]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      - temporal
+    ports:
+      - "3000:3000"
+
+  # 隔離された実行環境。外向き通信は egress 経由のみ。
+  sandbox:
+    build: ./sandbox
+    environment:
+      HTTP_PROXY: http://egress:8080
+      HTTPS_PROXY: http://egress:8080
+      GITHUB_TOKEN: dummy-placeholder
+    volumes:
+      - sandbox-workspace:/workspace
+      - egress-ca:/egress-ca:ro
+    networks:
+      - sandbox-net
+
+  # egress プロキシ: 宛先許可リスト + 本物クレデンシャルの付与
+  egress:
+    build: ./egress
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - egress-ca:/home/mitmproxy/.mitmproxy
+    networks:
+      - sandbox-net
+      - default
+
+networks:
+  sandbox-net:
+    internal: true
+
+volumes:
+  pgdata:
+  egress-ca:
+  sandbox-workspace:
