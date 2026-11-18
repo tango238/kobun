@@ -46,6 +46,7 @@ import {
   type DataGap,
   type MetricRow,
   type NewImprovement,
+  type RuleChange,
   type PastImprovement,
   type Series,
   type SlowQuery,
@@ -122,6 +123,37 @@ export async function notifyUser(
     'INSERT INTO user_feed (project_slug, source, kind, title, body) VALUES ($1, $2, $3, $4, $5)',
     [projectSlug, source, kind, title, body],
   );
+}
+
+/** 承認待ちになったルール変更があれば、ユーザーに承認を依頼する (振り返りと Outer Loop が使う) */
+export async function notifyPendingProposals(
+  projectSlug: string | null,
+  source: string,
+  titlePrefix: string,
+  changes: RuleChange[],
+): Promise<number> {
+  const pending = changes.filter((c) => c.proposalId !== undefined);
+  if (pending.length === 0) return 0;
+  await notifyUser(
+    projectSlug,
+    source,
+    'request',
+    `${titlePrefix} ${pending.length} 件の承認をお願いします`,
+    [
+      'kobun 共通・クライアントの層の変更は、承認されるまで適用されません。',
+      '',
+      '| 提案 | 層 | 操作 | 内容 |',
+      '| --- | --- | --- | --- |',
+      ...pending.map(
+        (c) =>
+          `| #${c.proposalId} | ${c.layer} | ${c.op.replace('承認待ち ', '')} | ${c.text.replace(/\|/g, '\\|')} |`,
+      ),
+      '',
+      '承認: 対話コマンドで `/approve <番号>` (API: `POST /rule-proposals/<番号>/approve`) / 却下: `/reject <番号>`',
+      `期限は ${PROPOSAL_DUE_DAYS} 日です。過ぎても自動では適用も却下もされず、チーフが1回だけ確認します。却下した提案は、同じ内容では二度と出ません。`,
+    ].join('\n'),
+  );
+  return pending.length;
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,28 +1182,7 @@ export async function applyRetro(
     // kobun 共通とクライアントの層は他のプロジェクトにも効くので、ユーザーの承認を待つ
     { requireApproval: true },
   );
-  const pending = ruleChanges.filter((c) => c.proposalId !== undefined);
-  if (pending.length > 0) {
-    await notifyUser(
-      slug,
-      'pjm',
-      'request',
-      `${project.name}: 行動ルールの変更 ${pending.length} 件の承認をお願いします`,
-      [
-        'kobun 共通・クライアントの層の変更は、承認されるまで適用されません。',
-        '',
-        '| 提案 | 層 | 操作 | 内容 |',
-        '| --- | --- | --- | --- |',
-        ...pending.map(
-          (c) =>
-            `| #${c.proposalId} | ${c.layer} | ${c.op.replace('承認待ち ', '')} | ${c.text.replace(/\|/g, '\\|')} |`,
-        ),
-        '',
-        '承認: `POST /rule-proposals/<番号>/approve` / 却下: `POST /rule-proposals/<番号>/reject`',
-        `期限は ${PROPOSAL_DUE_DAYS} 日です。過ぎても自動では適用も却下もされず、チーフが1回だけ確認します。却下した提案は、同じ内容では二度と出ません。`,
-      ].join('\n'),
-    );
-  }
+  await notifyPendingProposals(slug, 'pjm', `${project.name}: 行動ルールの変更`, ruleChanges);
 
   const adrTitles: string[] = [];
   if (decision.adrs.length > 0) {

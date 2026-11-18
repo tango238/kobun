@@ -29,6 +29,7 @@ cp .env.example .env   # LLM_BACKEND と資格情報を設定する (下記「LL
 docker compose up --build -d
 docker compose exec worker npm run schedule   # Outer Loop (日次) と巡回 (毎時) のスケジュール登録。何度実行してもよい
 docker compose exec worker npm run schedule -- chief-patrol   # 巡回だけを登録する
+docker compose exec worker npm run schedule -- outer-loop-daily   # Outer Loop だけを登録する
 ```
 
 起動したら、対話コマンドでチーフに話しかける (ホストで実行する)。
@@ -63,7 +64,7 @@ npm run chief              # リポジトリのルートからなら npm --prefi
 - **Postgres バックエンド**: Pi 標準の保存先は SQLite / JSONL のローカルファイルで、複数 Worker からは触れない。そこで SQLite コアが要求する `SqliteDatabase` ファサードを Postgres で実装し (`worker/src/pi/postgres-database.ts`)、`SqliteStorage.open(db, { prefix })` の実体を Postgres に置いた。セッションごとに prefix を分けて単一ライター前提を守る。
 - **Sandbox-as-a-tool**: ツール (read / write / edit / bash) の実行環境は Pi の `ExecutionEnv` をサンドボックスデーモン越しに実装したもの (`worker/src/pi/sandbox-env.ts`)。ハーネスはサンドボックスの外にいる。
 - **egress 制御**: サンドボックスは `internal: true` のネットワークに閉じ込められ、直接インターネットに出られない。外向き通信はすべて `egress` プロキシ経由で、許可リスト (ホスト/メソッド/パス) を通ったリクエストにだけ本物の GitHub トークンが付与される。サンドボックス内のトークンは `dummy-placeholder` のみ。
-- **Outer Loop**: 毎日 03:00 (Asia/Tokyo) に `outerLoopWorkflow` が前日分の平文チェックポイントを読み、LLM で「つまずき・人間の指摘」を分析して、サンドボックスの `reports/outer-loop-<日付>.md` にレポートを残す。改善 PR の作成までは自動化しておらず、レポート作成まで (PR 化は次の一手)。
+- **Outer Loop**: 毎日 03:00 (Asia/Tokyo) に `outerLoopWorkflow` が、直近 24 時間のエージェントの動きを集計して改善レポートを残す。全プロジェクトを横断して見るので、対象は kobun 全体 (ハーネス・プロンプト・共通ルール)。プロジェクト毎の改善は週次の振り返りが担う。共通ルールの提案は承認待ちに載るだけで、ユーザーが承認するまで変わらない。手順は下記「Outer Loop」。
 - **LLM バックエンド切替**: `LLM_BACKEND` で Pi Durable と `claude -p` を切り替える。資格情報の要件はバックエンドごとに異なる (下記「LLM 認証」)。
 
 ## エージェント組織
@@ -244,6 +245,56 @@ curl -X POST localhost:3000/projects/<slug>/feedback -H 'content-type: applicati
 
 守られているかは、レポートの「対応アクションなしの悪化指標」「連続未達」「指標・目標値なしのアクション」の件数で確認する。
 
+## Outer Loop
+
+kobun 全体の運用を、毎日見直す仕組み。直近 24 時間のエージェントの動き (`agent_turns`: チーフ・PjM・各ロールの発言の記録。旧来のセッションの `checkpoints` があれば件数も) を集計し、レポートを残す。
+
+- 数字 (発言数・失敗の種類・ロール別の所要時間・経路違反・繰り返された依頼・ユーザーの入力) はコードが集計する。LLM は、その数字を根拠にした解釈と改善案だけを書く (実装は `worker/src/outer-loop.ts`)。LLM が失敗しても、数字のレポートは残る
+- 記録が無い日は、LLM を呼ばずに「記録なし」と書く
+- レポートは、サンドボックスの `reports/outer-loop-<日付>.md` に書かれる。日付は日本時間。同じ日に2回動かすと上書きされる
+- 記録がある日は、要点 (数字) がユーザーのフィードにも届く (失敗があれば alert)
+- **kobun 共通ルールの提案**: 分析の中で、全プロジェクトの全ロールに効くと判断されたルールの追加・置換・廃止は、**承認待ち**に載る (1回 3 件まで)。クライアント・プロジェクトの層の提案は捨てる。承認するまでルールは変わらず、承認の依頼がフィードに届く。同じ提案は重ならず、却下したものや、すでに有効な同文のルールは、もう出ない
+- ハーネスやプロンプトの改善案は、コードの変更なので、レポートに書かれるだけ (人が直す)
+
+### 定期実行する
+
+日次の Temporal Schedule (`outer-loop-daily`、毎日 03:00 Asia/Tokyo) に登録する。スタックを起動したあと、一度だけ実行すればよい。
+
+```sh
+docker compose up --build -d
+docker compose exec worker npm run schedule -- outer-loop-daily   # Outer Loop だけを登録する
+# 引数なしなら、Outer Loop と巡回 (毎時) をまとめて登録する
+docker compose exec worker npm run schedule
+```
+
+- 何度実行してもよい (登録済みなら `schedule already registered` と出る)
+- 登録の確認・一時停止・再開・時刻の確認は、Temporal UI (http://localhost:8080) の Schedules から行える。時刻を変えるときは `worker/src/register-schedule.ts` の `cron` を直し、UI で `outer-loop-daily` を削除してから登録し直す
+- 動くのは worker が起動している間。コードを変えたあとは、`docker compose up --build -d` で作り直す
+
+### 手動で実行する
+
+LLM を1回呼ぶ (記録が無い日は呼ばない)。レポートができるまで応答は返らず、数分かかることがある。
+
+```sh
+curl -X POST localhost:3000/outer-loop/run
+# => {"reportPath":"reports/outer-loop-2026-11-19.md"}
+```
+
+Temporal UI の Schedules で `outer-loop-daily` を開き、Trigger でも起動できる (定期実行と同じ経路を通る)。
+
+### 結果を見る
+
+```sh
+# レポート (日付は日本時間)
+docker compose exec sandbox cat /workspace/reports/outer-loop-<YYYY-MM-DD>.md
+# フィード (要点と、ルール変更の承認依頼)。対話コマンドなら /history
+curl localhost:3000/feed
+# 承認待ちの共通ルール。対話コマンドなら /proposals、/approve <番号>、/reject <番号>
+curl localhost:3000/rule-proposals
+```
+
+実行の履歴は、Temporal UI の Workflows で `outerLoopWorkflow` を探す (定期実行は `outer-loop-<日時>`、手動実行は `outer-loop-manual-<時刻>`)。
+
 ## リポジトリ・データソース・シークレット
 
 プロジェクト毎に、リポジトリ (複数) とデータソース (複数) を登録する。エージェントに見えるのは名前・種類・説明・状態だけで、調査のときは `<fetch source="名前"/>` で数字を取り寄せる。
@@ -309,7 +360,7 @@ curl -X POST localhost:3000/projects/<slug>/infra-check/run
 cd worker && npx vitest run --exclude test/conformance.test.ts
 ```
 
-DB も LLM も不要 (71 件)。
+DB も LLM も不要 (84 件)。
 
 | ファイル | 確かめること |
 | --- | --- |
@@ -318,6 +369,7 @@ DB も LLM も不要 (71 件)。
 | `followup.test.ts` | 期限の解釈と、期限切れの段階の上げ方 |
 | `followup-workflow.test.ts` | Temporal のテストサーバーで、巡回の配送と、保留からの再開 |
 | `board.test.ts` | ボードの表示 |
+| `outer-loop.test.ts` | Outer Loop の集計 (失敗の分類、経路違反の扱い、繰り返しの検出、記録なしの日、LLM 失敗時のレポート) |
 | `repo.test.ts` | リポジトリ読み取りの範囲と拒否リスト |
 | `line-editor.test.ts` | 対話コマンドの入力欄 (貼り付け、Shift+Enter、全角文字の幅) |
 
@@ -346,6 +398,7 @@ docker stop kobun-followup-test
 - 期限の無い仕事は、巡回の対象にならない。エージェントが担当と期限を正しく書くか、催促に応じるかは、LLM を通しては未検証
 - 期限の引き直しに回数の上限は無い (理由と履歴は項目の本文に残る)
 - 巡回の時間帯 (9〜21 時の毎時) は固定。変えるには `worker/src/register-schedule.ts` を直して登録し直す
+- Outer Loop が共通ルールを提案するかは、集計した数字と LLM の判断による。実際の LLM では「提案なし」になることがある。提案が承認待ちに載る経路は、決まった入力でテストしてある
 - ルールの「4週間効果がなければ廃止」は行動規範としてエージェントに課しているだけで、自動判定はしていない
 
 ## 実装前の grilling と ask-a-person (運用ルール)
@@ -398,7 +451,7 @@ curl -X POST localhost:3000/sessions/<id>/messages -H 'content-type: application
 # 履歴取得
 curl localhost:3000/sessions/<id>
 
-# Outer Loop を手動で1回回す (レポートは sandbox の reports/ に生成)
+# Outer Loop を手動で1回回す (レポートは sandbox の reports/ に生成。LLM を1回呼ぶ。記録が無い日は呼ばない)
 curl -X POST localhost:3000/outer-loop/run
 
 # 耐久性の確認: worker を再起動しても会話が続く

@@ -9,7 +9,11 @@ import { Worker } from '@temporalio/worker';
 const address = process.env.REPLAY_TEMPORAL;
 
 it.skipIf(!address)('動いているチーフ・プロジェクト・セッションの履歴を、いまのコードで再生できる', async () => {
-  const connection = await Connection.connect({ address });
+  // 履歴が大きい実行は、既定の受信上限 (4MB) を超える
+  const connection = await Connection.connect({
+    address,
+    channelArgs: { 'grpc.max_receive_message_length': 64 * 1024 * 1024 },
+  });
   const client = new Client({ connection });
   const ids: string[] = [];
   for await (const wf of client.workflow.list({

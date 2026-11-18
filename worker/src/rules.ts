@@ -122,6 +122,22 @@ async function propose(
   reason: string,
   source: string,
 ): Promise<RuleChange> {
+  // すでに有効な同じ文面のルールがあれば、提案しない (承認済みの提案を、もう一度出さないため)
+  if (kind === 'add' || kind === 'replace') {
+    const active = await pool.query(
+      `SELECT code, text FROM rules WHERE status = 'active' AND scope = $1 AND scope_key = $2`,
+      [scope, scopeKey(scope, t)],
+    );
+    const dup = active.rows.find((r) => normalizeRuleText(String(r.text)) === normalizeRuleText(text));
+    if (dup) {
+      return {
+        layer: LAYER_LABEL[scope],
+        op: `提案せず (同じルールが ${dup.code} として有効)`,
+        code: '-',
+        text,
+      };
+    }
+  }
   // 同じ提案が承認待ちなら重ねない。ユーザーが却下した提案は蒸し返さない。
   // 「同じ」の判定: 層・対象・操作が同じで、文面が同じ (廃止は対象のルールが同じ)
   const prior = await pool.query(

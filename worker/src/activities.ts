@@ -11,7 +11,20 @@ import {
 export * from './org-activities';
 // 巡回 (期限切れの段階上げ) と、保留した実装タスクの再開
 export * from './followup-activities';
-import { notifyUser } from './org-activities';
+import { notifyPendingProposals, notifyUser } from './org-activities';
+import { activeRules, applyRuleChanges } from './rules';
+import type { RuleChange } from './metrics/report';
+import {
+  analysisPrompt,
+  errorExamples,
+  extractRuleProposals,
+  feedSummary,
+  jstDate,
+  renderReport,
+  summarizeTurns,
+  type OuterLoopStats,
+  type TurnRow,
+} from './outer-loop';
 
 const SANDBOX_URL = process.env.SANDBOX_URL ?? 'http://sandbox:7000';
 
@@ -162,75 +175,117 @@ export async function parkTask(
 }
 
 // ---------------------------------------------------------------------------
-// Outer Loop: 前日のセッション記録を分析し、改善レポートを作る
+// Outer Loop: 直近 24 時間のエージェントの動きを集計し、改善レポートを作る
+// 材料は agent_turns (チーフ・PjM・各ロールの発言の記録)。旧来のセッション (checkpoints) があれば件数を足す。
+// 集計は outer-loop.ts (コード)、LLM は数字を根拠にした解釈と改善案だけを書く。
 // ---------------------------------------------------------------------------
 
-export async function fetchRecentCheckpoints(): Promise<{
-  count: number;
-  digest: string;
-}> {
-  await ensureTable();
-  const res = await pool.query(
-    `SELECT messages, created_at FROM checkpoints
-     WHERE created_at > now() - interval '24 hours'
-     ORDER BY created_at`,
-  );
-  const lines = res.rows.map((r) => {
-    const msgs = r.messages as Message[];
-    const tail = msgs.slice(-4);
-    const text = tail
-      .map((m) => `${m.role}: ${m.content.slice(0, 300)}`)
-      .join('\n');
-    return `--- ${new Date(r.created_at).toISOString()} ---\n${text}`;
-  });
-  return { count: res.rows.length, digest: lines.join('\n') };
+const OUTER_LOOP_WINDOW_HOURS = 24;
+
+export interface OuterLoopInput {
+  date: string;
+  stats: OuterLoopStats;
+  examples: ReturnType<typeof errorExamples>;
 }
 
-export async function analyzeSessions(input: {
-  count: number;
-  digest: string;
-}): Promise<string> {
-  const date = new Date().toISOString().slice(0, 10);
-  if (input.count === 0) {
-    return `# Outer Loop レポート ${date}\n\n過去24時間のセッション記録はありませんでした。\n`;
-  }
+export type OuterLoopAnalysis = { ok: true; text: string } | { ok: false; error: string };
+
+/** 共通ルールの提案を、承認待ちに載せた結果 */
+export interface OuterLoopProposals {
+  changes: RuleChange[];
+  dropped: string[];
+}
+
+export async function collectOuterLoopInput(): Promise<OuterLoopInput> {
+  await ensureTable();
+  const turns = await pool.query<TurnRow>(
+    `SELECT project_slug, role, sender, input, output, duration_ms, error, created_at
+     FROM agent_turns
+     WHERE created_at > now() - make_interval(hours => $1)
+     ORDER BY created_at`,
+    [OUTER_LOOP_WINDOW_HOURS],
+  );
+  const legacy = await pool.query(
+    `SELECT count(*)::int AS n FROM checkpoints WHERE created_at > now() - make_interval(hours => $1)`,
+    [OUTER_LOOP_WINDOW_HOURS],
+  );
+  return {
+    date: jstDate(new Date()),
+    stats: summarizeTurns(turns.rows, {
+      windowHours: OUTER_LOOP_WINDOW_HOURS,
+      legacySessions: legacy.rows[0].n,
+    }),
+    examples: errorExamples(turns.rows),
+  };
+}
+
+export async function analyzeOuterLoop(input: OuterLoopInput): Promise<OuterLoopAnalysis> {
+  // 記録が無いなら LLM を呼ばない
+  if (input.stats.records === 0 && input.stats.legacySessions === 0) return { ok: true, text: '' };
   try {
-    const analysis = await callLLM([
+    const rules = await activeRules({ slug: '', client: '' });
+    const text = await callLLM([
       {
         role: 'user',
-        content: [
-          '以下は過去24時間のエージェントセッション記録です。',
-          'エージェントがつまずいた点、人間が指摘・修正した点を探し、',
-          'ハーネスやスキルの改善提案を Markdown でまとめてください。',
-          '',
-          input.digest.slice(0, 20000),
-        ].join('\n'),
+        content: analysisPrompt(input.stats, input.examples, rules.common).slice(0, 20000),
       },
     ]);
-    return `# Outer Loop レポート ${date}\n\n${analysis}\n`;
+    return { ok: true, text };
   } catch (err) {
-    return [
-      `# Outer Loop レポート ${date}`,
-      '',
-      `チェックポイント件数: ${input.count} (LLM 分析に失敗したため要約のみ: ${String(err)})`,
-      '',
-      '```',
-      input.digest.slice(0, 4000),
-      '```',
-    ].join('\n');
+    return { ok: false, error: String((err as Error)?.message ?? err) };
   }
+}
+
+/**
+ * 分析にあった共通ルールの提案を、承認待ちに載せる。ルールは変わらない (承認はユーザー)。
+ * 返す分析本文はタグを除いたもの。
+ */
+export async function proposeOuterLoopRules(
+  input: OuterLoopInput,
+  analysis: OuterLoopAnalysis,
+): Promise<{ analysis: OuterLoopAnalysis; proposals: OuterLoopProposals }> {
+  if (!analysis.ok) return { analysis, proposals: { changes: [], dropped: [] } };
+  const extracted = extractRuleProposals(analysis.text);
+  // 提案は、承認待ちの仕組みを通す。同じ提案は重ねず、却下された提案は蒸し返さない
+  const changes = await applyRuleChanges(
+    { slug: 'outer-loop', client: '' },
+    extracted.rules,
+    extracted.retires,
+    `outer-loop:${input.date}`,
+    { requireApproval: true },
+  );
+  await notifyPendingProposals(null, 'outer-loop', `Outer Loop ${input.date}: kobun 共通ルールの変更`, changes);
+  return {
+    analysis: { ok: true, text: extracted.text },
+    proposals: { changes, dropped: extracted.dropped },
+  };
 }
 
 export async function writeOuterLoopReport(
-  markdown: string,
+  input: OuterLoopInput,
+  analysis: OuterLoopAnalysis,
+  proposals: OuterLoopProposals = { changes: [], dropped: [] },
 ): Promise<string> {
-  const date = new Date().toISOString().slice(0, 10);
-  const path = `reports/outer-loop-${date}.md`;
+  const path = `reports/outer-loop-${input.date}.md`;
   const res = await fetch(`${SANDBOX_URL}/write`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ path, content: markdown }),
+    body: JSON.stringify({
+      path,
+      content: renderReport(input.date, input.stats, analysis, proposals),
+    }),
   });
   if (!res.ok) throw new Error(`sandbox write failed: ${res.status}`);
+  // 動きがあった日だけ、要点 (数字) をユーザーのフィードに出す
+  if (input.stats.records > 0) {
+    const pending = proposals.changes.filter((c) => c.proposalId !== undefined).length;
+    await notifyUser(
+      null,
+      'outer-loop',
+      input.stats.errors > 0 ? 'alert' : 'report',
+      `Outer Loop ${input.date}`,
+      feedSummary(input.stats, path, pending),
+    );
+  }
   return path;
 }

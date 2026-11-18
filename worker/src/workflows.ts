@@ -131,13 +131,14 @@ export async function sessionWorkflow(initial: Message[] = []): Promise<void> {
 }
 
 /**
- * Outer Loop: 前日のセッション記録を読み、分析し、レポートを残す。
+ * Outer Loop: 直近 24 時間のエージェントの動き (agent_turns) を集計し、分析して、レポートを残す。
  * Temporal Schedule から日次で起動される (src/register-schedule.ts)。
  * レポート作成までを実装している。「改善 PR の作成」は次のステップとする。
  */
 export async function outerLoopWorkflow(): Promise<string> {
-  const fetched = await acts.fetchRecentCheckpoints();
-  const report = await acts.analyzeSessions(fetched);
-  const path = await acts.writeOuterLoopReport(report);
-  return path;
+  const input = await acts.collectOuterLoopInput();
+  const analyzed = await acts.analyzeOuterLoop(input);
+  // 共通ルールの提案は承認待ちに載せる (ルールはユーザーが承認するまで変わらない)
+  const { analysis, proposals } = await acts.proposeOuterLoopRules(input, analyzed);
+  return acts.writeOuterLoopReport(input, analysis, proposals);
 }
