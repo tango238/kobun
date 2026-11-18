@@ -10,7 +10,7 @@
 | `worker` | エージェント組織の実行 (Temporal Workflow / Activity)。LLM の呼び出しもここ |
 | `api` | REST API (Hono)。対話コマンドもここに接続する |
 | `postgres` | 会話・ボード・ルール・指標・Pi のチェックポイントの保存先 |
-| `sandbox` | 隔離された実行環境 (成果物の保存、コマンド実行、リポジトリの読み取り) |
+| `sandbox` | 隔離された実行環境 (成果物の保存、コマンド実行、リポジトリの読み取り、Pi の `ExecutionEnv`) |
 | `egress` | サンドボックスの外向き通信の許可リストと、GitHub トークンの付与 (mitmproxy) |
 | `broker` | API キーの保管とデータ取得の代行 (クレデンシャルブローカー) |
 
@@ -298,7 +298,7 @@ docker compose exec worker npx vitest run test/conformance.test.ts
 ```
 
 - **Postgres バックエンド** (24 件): 通る。Pi が流す SQLite 方言の SQL は、`worker/src/pi/postgres-database.ts` が Postgres 向けに書き換える
-- **サンドボックス環境** (24 件): 未対応 (通らない)
+- **サンドボックス環境** (24 件): 通る。サンドボックスの中で Pi の `NodeExecutionEnv` を動かし (`sandbox/env-rpc.mjs`)、worker の `SandboxExecutionEnv` (`worker/src/pi/sandbox-env.ts`) が HTTP で中継する。ファイル操作・コマンド実行・ファイル監視の意味は Pi の実装そのもの。`exec` と `watch` は NDJSON で流し、中断は別の呼び出しで伝える
 
 ## 制限
 
@@ -317,7 +317,6 @@ docker compose exec worker npx vitest run test/conformance.test.ts
 
 - Outer Loop のレポートからの改善 PR の自動作成 (サンドボックス + egress の書き込み経路は用意済み)
 - 実装担当がサンドボックスでコードを動かす経路 (Pi のハーネスを直すか、別の実行方法にする)
-- サンドボックス環境の適合性テスト (上記)
 - クレデンシャルブローカーの認証
 - プロジェクト毎のリポジトリ権限の分離
 - GitHub の URL で登録したリポジトリの読み取り

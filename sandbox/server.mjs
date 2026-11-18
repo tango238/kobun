@@ -6,6 +6,7 @@ import { exec } from 'node:child_process';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { repoOp } from './repo-access.mjs';
+import { handleEnvRequest } from './env-rpc.mjs';
 
 const WORKSPACE = '/workspace';
 
@@ -24,6 +25,8 @@ async function listRecursive(dir, base) {
 }
 
 const server = http.createServer((req, res) => {
+  // Pi の ExecutionEnv の中継 (ストリームを使うので、本体の読み込みより先に振り分ける)
+  if (req.url?.startsWith('/env/') && handleEnvRequest(req, res)) return;
   const send = (code, obj) => {
     res.writeHead(code, { 'content-type': 'application/json' });
     res.end(JSON.stringify(obj));

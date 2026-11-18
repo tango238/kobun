@@ -40,10 +40,11 @@ async function getHarness(sessionId: string): Promise<Harness> {
     {
       models,
       registry,
-      env: ({ cwd: _cwd }: { cwd: string }) =>
+      env: ({ cwd }: { cwd?: string }) =>
         new SandboxExecutionEnv(
           process.env.SANDBOX_URL ?? 'http://sandbox:7000',
           sessionId,
+          cwd ?? '/workspace',
         ),
     },
     BACKGROUND_CONTEXT,

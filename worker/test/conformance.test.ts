@@ -8,6 +8,7 @@ import {
   registerEnvConformance,
   registerStorageConformance,
 } from '@earendil-works/pi-durable/testing';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { SqliteStorage } from '@earendil-works/pi-durable/storage/sqlite';
 import { PostgresSqliteDatabase } from '../src/pi/postgres-database';
 import { SandboxExecutionEnv } from '../src/pi/sandbox-env';
@@ -33,7 +34,17 @@ registerStorageConformance(
   },
 );
 
+// env の適合性: 空の作業ディレクトリをサンドボックスの中に作り、そこを cwd にした環境を渡す
 registerEnvConformance({ describe, expect, it }, 'SandboxExecutionEnv', async (use) => {
-  const env = new SandboxExecutionEnv(SANDBOX_URL, 'conformance');
-  await use(env as any);
+  const base = new SandboxExecutionEnv(SANDBOX_URL, 'conformance');
+  const made = await base.createTempDir('kobun-conformance-', BACKGROUND_CONTEXT);
+  if (!made.ok) throw made.error;
+  const dir = made.value as string;
+  const env = new SandboxExecutionEnv(SANDBOX_URL, 'conformance', dir);
+  try {
+    await use(env as any);
+  } finally {
+    await env.cleanup();
+    await base.remove(dir, { recursive: true, force: true }, BACKGROUND_CONTEXT);
+  }
 });

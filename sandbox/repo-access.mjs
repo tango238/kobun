@@ -103,9 +103,15 @@ async function list(root, rel) {
   const queue = [{ dir: real, depth: 0 }];
   while (queue.length > 0) {
     const { dir, depth } = queue.shift();
-    const items = (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (e) {
+      // 読めないサブディレクトリ (権限なし・消えたもの) は飛ばす。最初の階層が読めないときだけ失敗にする
+      if (depth === 0) throw e;
+      continue;
+    }
+    const items = entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const item of items) {
       const full = path.join(dir, item.name);
       const inside = path.relative(realBase, full);
