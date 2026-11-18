@@ -7,7 +7,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
 
   temporal:
     image: temporalio/auto-setup:latest
@@ -36,8 +36,14 @@ services:
   worker:
     build: ./worker
     environment:
+      TEMPORAL_ADDRESS: temporal:7233
       CHECKPOINT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/checkpoints
       SANDBOX_URL: http://sandbox:7000
+      BROKER_URL: http://broker:3100
+      REPOS_HOST_DIR: ${REPOS_DIR:-}
+      BROKER_PUBLIC_URL: http://localhost:${BROKER_PORT:-3100}
+      MODEL_OPUS: ${MODEL_OPUS:-claude-opus-5-5}
+      MODEL_SONNET: ${MODEL_SONNET:-claude-sonnet-5-5}
       LLM_BACKEND: ${LLM_BACKEND:-claude-cli}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-}
@@ -47,6 +53,7 @@ services:
       - postgres
       - temporal
       - sandbox
+      - broker
     networks:
       - default
       - sandbox-net
@@ -56,10 +63,33 @@ services:
     command: ["npx", "ts-node", "src/server.ts"]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
+      CHECKPOINT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/checkpoints
+      BROKER_PUBLIC_URL: http://localhost:${BROKER_PORT:-3100}
     depends_on:
+      - postgres
       - temporal
     ports:
       - "3000:3000"
+
+  # クレデンシャルブローカー: API キーを預かり、データ取得を代行する。
+  # ユーザーはシークレットをここに直接渡す (localhost:3100)。値を返す API は無く、
+  # 暗号鍵はこのコンテナだけがマウントする broker-data に置く。worker / api / sandbox は鍵を持たない。
+  broker:
+    build: ./worker
+    command: ["npx", "ts-node", "src/broker.ts"]
+    environment:
+      CHECKPOINT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/checkpoints
+      SANDBOX_URL: http://sandbox:7000
+      BROKER_KEY: ${BROKER_KEY:-}
+    volumes:
+      - broker-data:/data
+    depends_on:
+      - postgres
+    ports:
+      - "127.0.0.1:${BROKER_PORT:-3100}:3100"
+    networks:
+      - default
+      - sandbox-net
 
   # 隔離された実行環境。外向き通信は egress 経由のみ。
   sandbox:
@@ -70,6 +100,8 @@ services:
       GITHUB_TOKEN: dummy-placeholder
     volumes:
       - sandbox-workspace:/workspace
+      # エージェントが読むリポジトリの置き場 (読み取り専用)。.env の REPOS_DIR で指定する
+      - ${REPOS_DIR:-./sandbox/empty-repos}:/repos:ro
       - egress-ca:/egress-ca:ro
     networks:
       - sandbox-net
@@ -79,6 +111,7 @@ services:
     build: ./egress
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      EGRESS_GITHUB_ORG: ${EGRESS_GITHUB_ORG:-}
     volumes:
       - egress-ca:/home/mitmproxy/.mitmproxy
     networks:
@@ -91,5 +124,6 @@ networks:
 
 volumes:
   pgdata:
+  broker-data:
   egress-ca:
   sandbox-workspace:

@@ -17,17 +17,22 @@ from mitmproxy import http
 REAL_GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 PLACEHOLDER = "dummy-placeholder"
 
-# 対象の GitHub org / ユーザー名
-ORG = ""
+# 書き込みを許す GitHub の org / ユーザー名 (環境変数 EGRESS_GITHUB_ORG)。
+# 空なら GitHub への書き込みは一切許可しない (読み取りだけ)。
+ORG = os.environ.get("EGRESS_GITHUB_ORG", "").strip()
 
 # (host, methods, path regex) の許可リスト。ここに無い通信は 403 で落とす。
 ALLOW = [
     ("api.github.com", {"GET"}, re.compile(r"^/")),
-    ("api.github.com", {"POST", "PATCH", "PUT", "DELETE"}, re.compile(rf"^/repos/{ORG}/")),
-    ("github.com", {"GET", "POST"}, re.compile(rf"^/{ORG}/")),
     ("codeload.github.com", {"GET"}, re.compile(r"^/")),
     ("raw.githubusercontent.com", {"GET"}, re.compile(r"^/")),
 ]
+if ORG:
+    _org = re.escape(ORG)
+    ALLOW += [
+        ("api.github.com", {"POST", "PATCH", "PUT", "DELETE"}, re.compile(rf"^/repos/{_org}/")),
+        ("github.com", {"GET", "POST"}, re.compile(rf"^/{_org}/")),
+    ]
 
 
 def _inject(auth: str) -> str:

@@ -12,8 +12,14 @@ import {
   answerSignal,
   historyQuery,
   pendingQuestionsQuery,
+  resumeParkedSignal,
   Message,
+  type ParkedResume,
 } from './shared';
+import { enrichImplRequest } from './followup';
+
+// エージェント組織のワークフロー (チーフ / プロジェクト / 週次振り返り / インフラチェック)
+export * from './org-workflows';
 
 const acts = proxyActivities<typeof activities>({
   startToCloseTimeout: '10 minutes',
@@ -32,6 +38,8 @@ const ANSWER_DEADLINE_MS = 3 * 60 * 60 * 1000; // 3時間
  * 実装タスク ("impl:" で始まる入力) は、着手前に必ず grilling で
  * 要件を詰め、ask-a-person で人の回答を待つ。回答期限は3時間で、
  * 無回答の場合は状態を保存してそのタスクを停止し、次のタスクへ進む。
+ * 保留したタスクは、あとから回答が来れば resumeParked の Signal で再開する
+ * (質問はやり直さず、保存してあった質問と回答で要件を補強して実装に入る)。
  */
 export async function sessionWorkflow(initial: Message[] = []): Promise<void> {
   const sessionId = workflowInfo().workflowId;
@@ -46,11 +54,28 @@ export async function sessionWorkflow(initial: Message[] = []): Promise<void> {
   setHandler(answerSignal, (text: string) => {
     answer = text;
   });
+  // 再開の依頼は、通常の入力とは別に受ける。この Signal を受けたことのない実行中のセッションは、
+  // これまでと同じ順序でコマンドを出すので、履歴の再生には影響しない (patched は不要)
+  const resumes: ParkedResume[] = [];
+  setHandler(resumeParkedSignal, (r: ParkedResume) => {
+    resumes.push(r);
+  });
   setHandler(historyQuery, () => history);
   setHandler(pendingQuestionsQuery, () => pendingQuestions);
 
   for (;;) {
-    await condition(() => inbox.length > 0);
+    await condition(() => inbox.length > 0 || resumes.length > 0);
+    if (inbox.length === 0) {
+      // 保留からの再開: 保存してあった依頼・質問と、後から届いた回答で実装に入る
+      const r = resumes.shift()!;
+      history.push({
+        role: 'user',
+        content: enrichImplRequest(r.request, r.questions, r.answer),
+      });
+      const reply = await acts.runAgentStep(sessionId, history);
+      history.push({ role: 'assistant', content: reply });
+      continue;
+    }
     const text = inbox.shift()!;
     history.push({ role: 'user', content: text });
 
@@ -84,7 +109,7 @@ export async function sessionWorkflow(initial: Message[] = []): Promise<void> {
         ...questions.map((q, i) => `${i + 1}. ${q}`),
         '',
         '依頼者からの回答:',
-        answer as string,
+        answer ?? '',
       ].join('\n');
       const stepHistory = history.slice();
       stepHistory[stepHistory.length - 1] = {
@@ -108,21 +133,11 @@ export async function sessionWorkflow(initial: Message[] = []): Promise<void> {
 /**
  * Outer Loop: 前日のセッション記録を読み、分析し、レポートを残す。
  * Temporal Schedule から日次で起動される (src/register-schedule.ts)。
- * 分析から小さな改善案が得られれば、Draft PR まで自動で作成し、
- * レポート末尾に PR の URL (または作らなかった理由) を記録する。
+ * レポート作成までを実装している。「改善 PR の作成」は次のステップとする。
  */
 export async function outerLoopWorkflow(): Promise<string> {
   const fetched = await acts.fetchRecentCheckpoints();
   const report = await acts.analyzeSessions(fetched);
-  const pr = await acts.createImprovementPr(
-    report,
-    fetched.digest,
-    fetched.count,
-  );
-  const prSection =
-    pr.status === 'created'
-      ? `\n## 改善 PR\n\n自動で Draft PR を作成しました: ${pr.prUrl}\n`
-      : `\n## 改善 PR\n\n作成しませんでした (${pr.status}): ${pr.reason ?? ''}\n`;
-  const path = await acts.writeOuterLoopReport(report + prSection);
+  const path = await acts.writeOuterLoopReport(report);
   return path;
 }

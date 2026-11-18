@@ -1,0 +1,30 @@
+---
+config:
+  themeVariables:
+    fontSize: 22px
+  flowchart:
+    wrappingWidth: 480
+    nodeSpacing: 30
+    rankSpacing: 45
+---
+%% 辺のラベルはスマホ幅で 6px になったので外し、意味は本文の表に書いた。LLM の呼び出しは worker の箱に入れた
+flowchart TB
+  user["ユーザー"]
+  api["api<br/>会話と登録"]
+  temporal["Temporal<br/>受付と順番待ち"]
+  worker["worker<br/>8ロールを実行"]
+  broker["broker<br/>API キーと取得"]
+  sandbox["sandbox<br/>成果物と計測"]
+  ext["外部の取得先"]
+  pg[("Postgres")]
+
+  user --> api
+  user --> broker
+  api --> temporal
+  temporal --> worker
+  worker --> broker
+  worker --> sandbox
+  broker --> sandbox
+  broker --> ext
+  worker --> pg
+  broker --> pg

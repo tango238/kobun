@@ -1,0 +1,5 @@
+{
+  "labels": ["Schedule", "期限切れを探す", "段階 1: 担当に催促", "段階 2: PjM に上げる", "チーフに一覧を渡す", "段階 3: ユーザーのフィードに出す"],
+  "forbidden": [],
+  "edges": ["sched->sweep", "sweep->owner", "owner->pjm", "pjm->chief", "pjm->user", "chief->user"]
+}

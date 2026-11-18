@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "name": "typecheck",
+      "cmd": "npx tsc --noEmit -p . | grep -E '^src/' | cut -d'(' -f1 | sort | uniq -c",
+      "cwd": "../../worker",
+      "expect": ["7 src/pi/harness.ts"]
+    },
+    {
+      "name": "offline-tests",
+      "cmd": "npx vitest run test/org.test.ts test/org-workflow.test.ts test/board.test.ts test/line-editor.test.ts test/repo.test.ts test/followup.test.ts test/followup-workflow.test.ts 2>&1 | grep -E 'Test Files|Tests '",
+      "cwd": "../../worker",
+      "expect": ["Test Files  7 passed (7)", "Tests  71 passed (71)"]
+    },
+    {
+      "name": "gitignore",
+      "cmd": "git check-ignore -v .env personas worker/node_modules docs/node_modules docs/architecture/test-results docs/architecture/dist/index.open.html | awk '{print $2 \"  <-  \" $1}'; git check-ignore -q docs/architecture/dist/index.html || echo 'docs/architecture/dist/index.html  <-  (除外されていない)'; test -z \"$(git log --all --oneline -- .env)\" && echo '.env  <-  (コミットされた履歴なし)'",
+      "cwd": "../..",
+      "expect": [
+        ".env  <-  .gitignore:1:.env",
+        "docs/architecture/test-results  <-  docs/.gitignore:2:test-results/",
+        "docs/architecture/dist/index.html  <-  (除外されていない)",
+        ".env  <-  (コミットされた履歴なし)"
+      ]
+    },
+    {
+      "name": "limits",
+      "cmd": "grep -nE \"^(export )?const (TURN_BUDGET|CHIEF_BOUNCE_LIMIT|MAX_PARALLEL_TURNS) =|patched\\('\" src/org-workflows.ts | sed -E 's/^([0-9]+):[[:space:]]*/\\1: /' | cut -c1-80",
+      "cwd": "../../worker",
+      "expect": ["TURN_BUDGET = 24", "CHIEF_BOUNCE_LIMIT = 3", "MAX_PARALLEL_TURNS = 3", "chief-batch-v2", "project-mailboxes-v2"]
+    },
+    {
+      "name": "no-auth",
+      "cmd": "for f in worker/src/broker.ts worker/src/server.ts sandbox/server.mjs; do printf '%s: ' $f; grep -ciE 'authorization|bearer|x-kobun|api[-_]?key' $f; done; true",
+      "cwd": "../..",
+      "expect": ["worker/src/broker.ts: 0", "worker/src/server.ts: 0", "sandbox/server.mjs: 0"]
+    },
+    {
+      "name": "catalog",
+      "cmd": "printf '指標の数: '; grep -c \"key: '\" src/metrics/catalog.ts; printf 'token / usage を含む行: '; grep -ciE 'token|usage' src/metrics/catalog.ts; true",
+      "cwd": "../../worker",
+      "expect": ["指標の数: 27", "token / usage を含む行: 0"]
+    }
+  ]
+}

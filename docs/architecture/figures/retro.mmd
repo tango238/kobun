@@ -1,0 +1,23 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 480
+---
+flowchart TB
+  sched["Schedule<br/>月曜 09:00 に起動"]
+  collect["数字を取得<br/>broker 経由 + kobun の自己計測"]
+  snap["前週と比べる<br/>悪化・未達・未計測を機械判定"]
+  propose["5ロールが提案<br/>数字を根拠に改善案"]
+  decide["PjM が決定<br/>アクション・ルール・ADR"]
+  apply["確定する<br/>前週を判定、ルールを更新か承認待ちに"]
+  report["改善レポート<br/>コードが数字から組み立てる"]
+  instruct["PjM に実行を指示<br/>チームが1週間で実行"]
+
+  sched --> collect
+  collect --> snap
+  snap --> propose
+  propose --> decide
+  decide --> apply
+  apply -->|ユーザーへ| report
+  apply --> instruct
+  instruct -->|翌週の計測値で判定| sched

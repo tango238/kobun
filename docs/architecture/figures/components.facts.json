@@ -1,0 +1,5 @@
+{
+  "labels": ["ユーザー", "api", "Temporal", "worker", "sandbox", "broker", "Postgres", "外部の取得先"],
+  "forbidden": ["egress"],
+  "edges": ["user->api", "user->broker", "api->temporal", "temporal->worker", "worker->sandbox", "worker->broker", "broker->ext", "broker->sandbox", "worker->pg", "broker->pg"]
+}

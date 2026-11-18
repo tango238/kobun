@@ -5,6 +5,7 @@ import http from 'node:http';
 import { exec } from 'node:child_process';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { repoOp } from './repo-access.mjs';
 
 const WORKSPACE = '/workspace';
 
@@ -68,6 +69,9 @@ const server = http.createServer((req, res) => {
             })),
           });
         }
+      } else if (req.url === '/repo') {
+        // リポジトリ (読み取り専用マウント) の一覧・検索・読み取り
+        send(200, await repoOp(data));
       } else if (req.url === '/health') {
         send(200, { ok: true });
       } else {

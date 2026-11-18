@@ -1,3 +1,5 @@
 .env
 node_modules/
 .DS_Store
+# 解説資料の読み手のメモ (個人についての記述なのでコミットしない)
+personas/

@@ -1,0 +1,19 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 480
+---
+flowchart TB
+  sched["Schedule<br/>9〜21 時の毎時に起動"]
+  sweep["期限切れを探す<br/>ボードの質問・やること (コード)"]
+  owner["段階 1: 担当に催促<br/>片付けるか、理由つきで期限を引き直す"]
+  pjm["段階 2: PjM に上げる<br/>24 時間たっても残っている場合"]
+  chief["チーフに一覧を渡す<br/>新しい判断待ちがあるときだけ (LLM)"]
+  user["段階 3: ユーザーのフィードに出す<br/>さらに 24 時間。ここから先は通知しない"]
+
+  sched --> sweep
+  sweep --> owner
+  owner --> pjm
+  pjm --> chief
+  pjm --> user
+  chief -->|判断が要るものだけ| user

@@ -1,0 +1,28 @@
+{
+  "checks": [
+    {
+      "name": "services",
+      "cmd": "docker compose config --services | sort",
+      "cwd": "../..",
+      "expect": ["api", "broker", "egress", "postgres", "sandbox", "temporal", "temporal-ui", "worker"]
+    },
+    {
+      "name": "roles",
+      "cmd": "npx ts-node -e \"import { ROLES } from './src/agents/roles'; for (const r of Object.values(ROLES)) console.log([r.id, r.tier, r.scope, r.talksTo.join(', ')].join(' | '));\"",
+      "cwd": "../../worker",
+      "expect": ["chief | opus | global | user, pjm", "infra-engineer | sonnet | project | engineer-lead"]
+    },
+    {
+      "name": "org-tests",
+      "cmd": "npx vitest run test/org.test.ts test/org-workflow.test.ts 2>&1 | grep -E 'Test Files|Tests '",
+      "cwd": "../../worker",
+      "expect": ["Test Files  2 passed (2)", "Tests  24 passed (24)"]
+    },
+    {
+      "name": "typecheck",
+      "cmd": "npx tsc --noEmit -p . | grep -E '^src/' | cut -d'(' -f1 | sort | uniq -c",
+      "cwd": "../../worker",
+      "expect": ["src/pi/harness.ts"]
+    }
+  ]
+}

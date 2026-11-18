@@ -1,0 +1,5 @@
+{
+  "labels": ["Schedule", "数字を取得", "前週と比べる", "5ロールが提案", "PjM が決定", "確定する", "改善レポート", "PjM に実行を指示"],
+  "forbidden": [],
+  "edges": ["sched->collect", "collect->snap", "snap->propose", "propose->decide", "decide->apply", "apply->report", "apply->instruct", "instruct->sched"]
+}
